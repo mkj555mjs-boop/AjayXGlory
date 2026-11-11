@@ -789,7 +789,7 @@ async def _send_external_join(guild_id: str, uid: str, password: str):
         return r.status_code, data
 
 
-async def _run_automation(guild_id: str, region: str, total: int, threads: int, fresh_pool: bool):
+async def _run_automation(guild_id: str, region: str, total: int, threads: int, fresh_pool: bool, proxy: str = None):
     """Generate accounts -> fetch guild -> send join requests -> start Glory."""
     bot_state.automation.update({
         "running": True, "stage": "generating", "target": total,
@@ -800,7 +800,7 @@ async def _run_automation(guild_id: str, region: str, total: int, threads: int, 
     try:
         # Keep the event loop responsive while the generator uses its own workers.
         if total > 0:
-            result = await asyncio.to_thread(account_generator.generate_accounts, total, threads, fresh_pool)
+            result = await asyncio.to_thread(account_generator.generate_accounts, total, threads, fresh_pool, region, proxy)
             bot_state.automation["created"] = int(result.get("created", 0))
             bot_state.automation["message"] = f"تم إنشاء {result.get('created', 0)} من {total} حساب"
             if int(result.get("created", 0)) < total:
@@ -835,6 +835,13 @@ async def _run_automation(guild_id: str, region: str, total: int, threads: int, 
                 http_status, result = await _send_external_join(guild_id, uid, account["password"])
                 success = bool(isinstance(result, dict) and result.get("success") is True)
                 message = result.get("message", "") if isinstance(result, dict) else ""
+                raw = str(result.get("raw_response", "") or "") if isinstance(result, dict) else ""
+                if not success and "BR_CLAN_NOT_SAME_REGION" in (raw + message + str(result)):
+                    message = (
+                        "الحساب مُقفل على منطقة مختلفة عن منطقة الجيلد (BR_CLAN_NOT_SAME_REGION). "
+                        "جارينا تُقفل منطقة الحساب الجديد حسب IP الاتصال — استخدم بروكسي من منطقة الجيلد "
+                        "أو شغّل الأداة من شبكة داخل نفس المنطقة، وجرّب زر «فحص المنطقة» أولًا."
+                    )
                 label = "تم إرسال طلب الانضمام" if success else "فشل طلب الانضمام"
                 bot_state.log(f"المعرّف {uid}: {label}" + (f" | {message}" if message else ""), "success" if success else "error", uid)
                 join_results.append({"uid": uid, "success": success, "status": label, "http_status": http_status, "response": result})
@@ -876,10 +883,48 @@ async def handle_api_start(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"status": "error", "error": "عدد الحسابات أو الخيوط غير صالح"}, status=400)
     fresh_pool = bool(body.get("fresh_pool", True))
+    proxy = str(body.get("proxy", "")).strip() or None
     if not guild_id:
         return web.json_response({"status": "error", "error": "معرّف الجيلد مطلوب"}, status=400)
-    bot_state.automation_task = asyncio.create_task(_run_automation(guild_id, region, total, threads, fresh_pool))
+    bot_state.automation_task = asyncio.create_task(_run_automation(guild_id, region, total, threads, fresh_pool, proxy))
     return web.json_response({"status": "started", "automation": bot_state.automation})
+
+
+async def handle_api_regioncheck(request: web.Request) -> web.Response:
+    """فحص المنطقة: ينشئ حسابًا اختباريًا ويكشف المنطقة التي يُقفل عليها الجهاز/البروكسي."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    region = str(body.get("region", "IND")).strip().upper() or "IND"
+    proxy = str(body.get("proxy", "")).strip() or None
+    try:
+        probe = await asyncio.wait_for(
+            asyncio.to_thread(account_generator.probe_region, region, proxy),
+            timeout=60.0,
+        )
+    except asyncio.TimeoutError:
+        return web.json_response({"status": "error", "error": "انتهت مهلة الفحص (60 ثانية)"}, status=504)
+    except Exception as e:
+        return web.json_response({"status": "error", "error": str(e)}, status=500)
+    if not probe.get("ok"):
+        return web.json_response({"status": "error", "error": probe.get("error", "فشل الفحص")}, status=502)
+    lock = str(probe.get("lock_region") or "").upper()
+    match = (lock == region)
+    bot_state.log(
+        f"فحص المنطقة: المطلوب {region} | المُقفل فعليًا {lock or '؟'} | بلد الـ IP: {probe.get('country_code') or '؟'}"
+        + (" ✔ متطابقة" if match else " ✘ غير متطابقة — تحتاج بروكسي من المنطقة " + region),
+        "success" if match else "error",
+    )
+    return web.json_response({
+        "status": "success",
+        "requested_region": region,
+        "lock_region": lock,
+        "country_code": probe.get("country_code"),
+        "noti_region": probe.get("noti_region"),
+        "match": match,
+        "advice": "" if match else f"الحسابات ستُنشأ بمنطقة {lock or '؟'} وليس {region}. استخدم بروكسي/VPN داخل منطقة {region} ثم أعد الفحص.",
+    })
 
 
 async def handle_api_automation(request: web.Request) -> web.Response:
@@ -1380,6 +1425,7 @@ async def start_web_dashboard(host: str = "0.0.0.0", port: int = 5000):
     app.router.add_get("/", handle_index)
     app.router.add_post("/api/setup", handle_api_setup)
     app.router.add_post("/api/start", handle_api_start)
+    app.router.add_post("/api/regioncheck", handle_api_regioncheck)
     app.router.add_get("/api/automation", handle_api_automation)
     app.router.add_get("/api/guild-config", handle_api_guild_config)
     app.router.add_post("/api/clanjoin", handle_api_setup)

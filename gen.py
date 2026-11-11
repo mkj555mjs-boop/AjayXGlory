@@ -39,6 +39,24 @@ GENERATE_NICKNAME_URL = "https://loginbp.ppmainecoonghj.com/GenerateNickname"
 GETLOGIN_HOST_IND   = "client.ind.freefiremobile.com"
 GETLOGIN_HOST_OTHER = "clientbp.ggpolarbear.com"
 
+# خريطة مضيفي GetLoginData لكل منطقة (متوافقة مع REGION_SERVER_MAP في dashboard_server.py)
+GETLOGIN_HOSTS = {
+    "IND": "client.ind.freefiremobile.com",
+    "ME":  "clientbp.ggblueshark.com",
+    "PK":  "clientbp.ggblueshark.com",
+    "BD":  "clientbp.ggwhitehawk.com",
+    "VN":  "clientbp.ggpolarbear.com",
+    "SG":  "clientbp.ggpolarbear.com",
+    "ID":  "clientbp.ggpolarbear.com",
+    "TH":  "clientbp.ggpolarbear.com",
+    "RU":  "clientbp.ggpolarbear.com",
+    "BR":  "client.us.freefiremobile.com",
+    "NA":  "client.us.freefiremobile.com",
+    "SAC": "client.br.freefiremobile.com",
+    "TW":  "client.tw.freefiremobile.com",
+    "CIS": "client.cis.freefiremobile.com",
+}
+
 ACCOUNTS_FILE = "accounts.json"
 LOG_FILE      = "generator.log"
 
@@ -479,7 +497,7 @@ IP_ADDRESSES = [
 
 random_ip = random.choice(IP_ADDRESSES)
 
-def build_major_login_payload(access_token, open_id, platform_type=4):
+def build_major_login_payload(access_token, open_id, platform_type=4, region="IND"):
     return {
         3: time.strftime("%Y-%m-%d %H:%M:%S"),
         4: "free fire",
@@ -506,7 +524,7 @@ def build_major_login_payload(access_token, open_id, platform_type=4):
 
         24: "Handheld",
         25: "realme RMX2189",
-        26: "TW",
+        26: str(region).upper(),
 
         # Access token
         29: access_token,
@@ -557,11 +575,11 @@ def build_major_login_payload(access_token, open_id, platform_type=4):
     }
 
 
-def send_major_login(session, access_token, open_id, platform_type=4, ua=None):
+def send_major_login(session, access_token, open_id, platform_type=4, ua=None, region="IND"):
     L_step(f"send_major_login → {MAJOR_LOGIN_URL}")
-    L_info(f"  platform: {platform_type}")
+    L_info(f"  platform: {platform_type}  region: {str(region).upper()}")
 
-    body = build_major_login_payload(access_token, open_id, platform_type)
+    body = build_major_login_payload(access_token, open_id, platform_type, region=region)
     plain = assemble_proto(body)
     encrypted = aes_encrypt(plain)
 
@@ -643,7 +661,7 @@ def build_getlogindata_payload(jwt, open_id, platform, region="IND"):
 
 
 def send_getlogindata(session, jwt, open_id, platform_type="4", region="IND", ua=None):
-    host = GETLOGIN_HOST_IND if region.upper() == "IND" else GETLOGIN_HOST_OTHER
+    host = GETLOGIN_HOSTS.get(str(region).upper(), GETLOGIN_HOST_OTHER)
     url = f"https://{host}/GetLoginData"
     L_step(f"send_getlogindata → {url}")
     L_info(f"  region: {region}  platform: {platform_type}")
@@ -685,6 +703,56 @@ def parse_getlogindata_response(data):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  REGION PROBE — فحص المنطقة التي يسندها السيرفر للحساب الجديد
+# ══════════════════════════════════════════════════════════════════════════════
+def probe_region(region: str = "IND", proxy: str = None) -> dict:
+    """ينشئ حسابًا اختباريًا (بدون حفظه في accounts.json) ويعيد المنطقة المقفولة عليه.
+
+    جارينا تُقفل منطقة الحساب الجديد حسب IP الاتصال الحقيقي — لذلك هذه الدالة
+    تكشف المنطقة التي ستُنشأ بها الحسابات من هذا الجهاز/البروكسي.
+    """
+    import base64 as _b64
+
+    region = str(region).upper() or "IND"
+    s = requests.Session()
+    s.verify = False
+    if proxy:
+        s.proxies = {"http": proxy, "https": proxy}
+
+    ua = pick_msdk_ua()
+    password = f"Ajay_{os.urandom(6).hex().upper()}"
+    uid = register_guest(s, password, ua)
+    access_token, open_id = get_token_legacy(s, uid, password, ua)
+    nickname = generate_nickname(s, open_id)
+    reg = send_major_register(s, nickname, access_token, open_id, ua)
+    account_id = reg.get(3)
+    if not account_id:
+        return {"ok": False, "error": "MajorRegister failed"}
+    send_newbie_choice(s, account_id, choice=3, ua=ua)
+    login = send_major_login(s, access_token, open_id, platform_type=4, ua=pick_unity_ua(), region=region)
+    jwt = login.get(8)
+    if isinstance(jwt, bytes):
+        jwt = jwt.decode("utf-8", errors="ignore")
+    if not jwt:
+        return {"ok": False, "error": "MajorLogin failed: JWT missing"}
+    try:
+        payload = jwt.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(_b64.urlsafe_b64decode(payload))
+    except Exception as e:
+        return {"ok": False, "error": f"JWT decode failed: {e}"}
+    return {
+        "ok": True,
+        "uid": uid,
+        "password": password,
+        "requested_region": region,
+        "country_code": claims.get("country_code"),
+        "lock_region": claims.get("lock_region"),
+        "noti_region": claims.get("noti_region"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  JSON I/O
 # ══════════════════════════════════════════════════════════════════════════════
 def load_json(path, default=None):
@@ -714,7 +782,7 @@ def save_account(account: dict) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 #  WORKER
 # ══════════════════════════════════════════════════════════════════════════════
-def create_one_account(worker_id: int, total: int, counters: dict):
+def create_one_account(worker_id: int, total: int, counters: dict, region: str = "IND", proxy: str = None):
     while not stop_flag.is_set():
         # Reserve exactly one account slot before doing network work.
         # success + active can never exceed the requested total.
@@ -730,6 +798,11 @@ def create_one_account(worker_id: int, total: int, counters: dict):
         try:
             session = requests.Session()
             session.verify = False
+            # بروكسي اختياري — ضروري عندما يكون سيرفر الجيلد في منطقة مختلفة
+            # عن شبكة الجهاز (قفل المنطقة يعتمد على IP الاتصال الحقيقي).
+            if proxy:
+                session.proxies = {"http": proxy, "https": proxy}
+                L_info(f"  proxy   : {proxy}")
 
             # Per-account: ONLY User-Agents are randomized
             msdk_ua  = pick_msdk_ua()
@@ -786,7 +859,8 @@ def create_one_account(worker_id: int, total: int, counters: dict):
             # STEP 6
             L_step("── STEP 5/7 · send_major_login ──")
             login_resp = send_major_login(session, access_token, open_id,
-                                          platform_type=4, ua=unity_ua)
+                                          platform_type=4, ua=unity_ua,
+                                          region=region)
             jwt = login_resp.get(8)
             if isinstance(jwt, bytes):
                 jwt = jwt.decode("utf-8", errors="ignore")
@@ -796,20 +870,28 @@ def create_one_account(worker_id: int, total: int, counters: dict):
 
             # STEP 7
             L_step("── STEP 6/7 · send_getlogindata ──")
-            status, content = send_getlogindata(session, jwt, open_id,
-                                                platform_type="4",
-                                                region="IND", ua=unity_ua)
             online_ip, chat_ip = None, None
-            if status == 200:
-                info = parse_getlogindata_response(content)
-                online_ip = info.get("online_ip_port")
-                chat_ip   = info.get("account_ip_port")
-                L_ok(f"  online_ip_port = {online_ip}")
-                L_ok(f"  chat_ip_port   = {chat_ip}")
+            try:
+                status, content = send_getlogindata(session, jwt, open_id,
+                                                    platform_type="4",
+                                                    region=region, ua=unity_ua)
+                if status == 200:
+                    info = parse_getlogindata_response(content)
+                    online_ip = info.get("online_ip_port")
+                    chat_ip   = info.get("account_ip_port")
+                    L_ok(f"  online_ip_port = {online_ip}")
+                    L_ok(f"  chat_ip_port   = {chat_ip}")
+                else:
+                    L_warn(f"  GetLoginData HTTP {status} — غير حاسم، الاستمرار")
+            except Exception as ge:
+                # GetLoginData خطوة معلوماتية فقط (عناوين سيرفرات الأونلاين) —
+                # فشلها لا يجب أن يُلغي الحساب الذي أُنشئ بالكامل بالفعل.
+                L_warn(f"  GetLoginData failed — غير حاسم، الاستمرار | {ge}")
 
             L_step("── STEP 7/7 · save account ──")
             account = {
                 "uid": uid, "password": password, "nickname": nickname,
+                "region": str(region).upper(),
                 "open_id": open_id, "access_token": access_token,
                 "account_id": account_id, "jwt": jwt,
                 "online_ip_port": online_ip, "chat_ip_port": chat_ip,
@@ -856,11 +938,18 @@ def create_one_account(worker_id: int, total: int, counters: dict):
                 except Exception: pass
 
 
-def generate_accounts(total: int, threads: int = 5, reset_existing: bool = False):
-    """Generate accounts from the existing generator without using its CLI prompt."""
+def generate_accounts(total: int, threads: int = 5, reset_existing: bool = False, region: str = "IND", proxy: str = None):
+    """Generate accounts from the existing generator without using its CLI prompt.
+
+    region: منطقة اللعبة المستهدفة (IND / ME / BD ... ) — تُستخدم في MajorLogin
+    وGetLoginData حتى يُنشأ الحساب على سيرفر الجيلد المراد الانضمام إليه.
+    proxy: بروكسي اختياري (http/socks5) — المفروض أن يكون في نفس منطقة الجيلد
+    لأن جارينا تُقفل منطقة الحساب الجديد حسب IP الاتصال.
+    """
     global stop_flag
     total = max(1, int(total))
     threads = max(1, min(30, int(threads)))
+    region = (str(region).upper() or "IND")
     stop_flag.clear()
 
     if reset_existing:
@@ -881,7 +970,7 @@ def generate_accounts(total: int, threads: int = 5, reset_existing: bool = False
         # guarantees: success + active <= total, so the generator can never
         # overshoot the requested count.
         for i in range(1, min(threads, total) + 1):
-            futures.append(executor.submit(create_one_account, i, total, counters))
+            futures.append(executor.submit(create_one_account, i, total, counters, region, proxy))
 
         try:
             while True:

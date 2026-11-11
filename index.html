@@ -106,6 +106,14 @@ button,input,select{font:inherit;color:inherit}
 .check input{accent-color:var(--gold);margin-top:3px;width:16px;height:16px;flex:none}
 .check small{display:block;color:var(--fog);font-size:12px;margin-top:2px}
 button{border:0;cursor:pointer}
+#rcbtn{width:100%;padding:12px 14px;border-radius:10px 4px 10px 4px;background:var(--raised);color:var(--gold);border:1px solid var(--edge);font-weight:800;font-size:14px}
+#rcbtn:hover:not(:disabled){border-color:var(--gold);filter:brightness(1.1)}
+#rcbtn:disabled{opacity:.5;cursor:not-allowed}
+.rc-result{margin-top:12px;padding:12px 14px;border-radius:10px;font-size:13px;line-height:1.7;border:1px solid var(--edge);background:var(--pit)}
+.rc-result.wait{color:var(--fog)}
+.rc-result.good{border-color:var(--mint);color:var(--mint)}
+.rc-result.bad{border-color:var(--rose);color:var(--bone)}
+.rc-result.bad b,.rc-result.good b{color:inherit}
 #start{width:100%;margin-top:14px;padding:15px 18px;border-radius:14px 6px 14px 6px;background:linear-gradient(135deg,var(--gold),var(--ember));color:var(--gold-ink);font:900 17px/1.3 var(--display)}
 #start:hover:not(:disabled){filter:brightness(1.08)}
 #start:disabled{opacity:.5;cursor:not-allowed}
@@ -264,6 +272,8 @@ button{border:0;cursor:pointer}
  <div class="ph"><div><h2>إضافة الحسابات</h2><p>بزر واحد: أنشئ حسابات جديدة، وانضم بها إلى الجيلد، وابدأ رفع المجد. الحسابات القديمة تظل تعمل بالتوازي.</p></div></div>
  <ol class="steps" id="steps"><li data-n="1">إنشاء الحسابات</li><li data-n="2">البحث عن الجيلد</li><li data-n="3">طلب الانضمام</li><li data-n="4">بدء المجد</li></ol>
  <div class="fields"><div class="field"><label for="guildId">معرّف الجيلد (Guild ID)</label><input id="guildId" placeholder="اكتب معرّف الجيلد هنا" inputmode="numeric" autocomplete="off"/></div><div class="field"><label for="region">المنطقة (Region)</label><select id="region"><option>IND</option><option>BD</option><option>SG</option><option>ID</option><option>ME</option><option>VN</option><option>BR</option><option>NA</option><option>PK</option><option>TH</option></select></div></div>
+ <div class="fields"><div class="field"><label for="proxy">بروكسي المنطقة (اختياري — http/socks5)</label><input id="proxy" placeholder="مثال: http://user:pass@host:port" autocomplete="off" dir="ltr"/></div><div class="field"><label for="rcbtn">التأكد من مطابقة المنطقة قبل البدء</label><button id="rcbtn" type="button" class="ghost">فحص المنطقة</button></div></div>
+ <div id="rcresult" class="rc-result" style="display:none"></div>
  <div class="fields"><div class="field"><label for="total">كم حساباً جديداً تريد إنشاءه؟</label><input id="total" type="number" min="1" max="500" value="5"/></div><div class="field"><label for="threads">خيوط المولّد (Threads)</label><input id="threads" type="number" min="1" max="30" value="5"/></div></div>
  <div class="controls"><label class="check"><input id="fresh" type="checkbox" checked/><span>مجموعة حسابات جديدة (accounts.json)<small>الحسابات القديمة لا تُحذف، بل تُحفظ في الأرشيف. يمكنك إعادة تفعيلها لاحقاً من قسم «الحسابات القديمة» بالأسفل.</small></span></label></div>
  <button id="start" type="button">أنشئ الحسابات، انضم إلى الجيلد، وابدأ المجد</button>
@@ -431,7 +441,10 @@ async function pollStats(){try{const r=await fetch('/api/stats?logs=200');const 
 document.querySelectorAll('.f').forEach(b=>b.onclick=()=>{filt=b.dataset.f;document.querySelectorAll('.f').forEach(x=>x.classList.toggle('on',x===b));renderLogs()});
 $('hideDbg').onchange=renderLogs;
 
-$('start').onclick=async()=>{const guild_id=$('guildId').value.trim(),region=$('region').value,total=Number($('total').value),threads=Number($('threads').value),fresh=$('fresh').checked;if(!guild_id)return alert('أدخل معرّف الجيلد أولاً');$('start').disabled=true;try{const r=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guild_id,region,total_accounts:total,threads,fresh_pool:fresh})});const d=await r.json();if(!r.ok)alert(d.error||'فشل البدء')}catch(e){alert('فشل الاتصال بالخادم')}};
+$('start').onclick=async()=>{const guild_id=$('guildId').value.trim(),region=$('region').value,total=Number($('total').value),threads=Number($('threads').value),fresh=$('fresh').checked,proxy=$('proxy').value.trim();if(!guild_id)return alert('أدخل معرّف الجيلد أولاً');$('start').disabled=true;try{const r=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guild_id,region,total_accounts:total,threads,fresh_pool:fresh,proxy})});const d=await r.json();if(!r.ok)alert(d.error||'فشل البدء')}catch(e){alert('فشل الاتصال بالخادم')}};
+
+/* ---------- فحص المنطقة قبل البدء ---------- */
+$('rcbtn').onclick=async()=>{const region=$('region').value,proxy=$('proxy').value.trim();const box=$('rcresult');box.style.display='block';box.className='rc-result wait';box.textContent='جاري الفحص — إنشاء حساب اختباري لمعرفة المنطقة المُقفلة… (حتى 60 ثانية)';$('rcbtn').disabled=true;try{const r=await fetch('/api/regioncheck',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({region,proxy})});const d=await r.json();if(!r.ok){box.className='rc-result bad';box.textContent='فشل الفحص: '+(d.error||'خطأ غير معروف')}else if(d.match){box.className='rc-result good';box.innerHTML='✅ المنطقة متطابقة: الحسابات الجديدة ستُنشأ بمنطقة <b>'+esc(d.lock_region)+'</b> (بلد الـ IP: '+esc(d.country_code||'؟')+'). يمكنك البدء بأمان.'}else{box.className='rc-result bad';box.innerHTML='⚠️ المنطقة غير متطابقة: المطلوب <b>'+esc(d.requested_region)+'</b> لكن الحسابات ستُقفل على <b>'+esc(d.lock_region||'؟')+'</b> (بلد الـ IP: '+esc(d.country_code||'؟')+').<br>'+esc(d.advice||'')}}catch(e){box.className='rc-result bad';box.textContent='فشل الاتصال بالخادم'}};
 setInterval(poll,1000);setInterval(pollStats,2000);poll();pollStats();
 
 /* ---------- خطوات التنفيذ (إنشاء الحسابات ← الجيلد ← الانضمام ← المجد) ---------- */

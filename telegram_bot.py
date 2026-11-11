@@ -12,6 +12,7 @@ import time
 
 import httpx
 
+import account_generator
 from dashboard_server import bot_state
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +56,7 @@ HELP_TEXT = (
     "🤖 بوت AjayXGlory للتحكم والمراقبة\n\n"
     "/status — حالة البوت الحالية\n"
     "/glory — مجد الجيلد المباشر\n"
+    "/region — فحص منطقة الحسابات الجديدة\n"
     "/log — آخر سطور السجل\n"
     "/help — عرض هذه المساعدة"
 )
@@ -126,6 +128,29 @@ async def _handle_update(update):
             )
         else:
             reply = "لا يوجد مجد مباشر بعد — ابدأ المجد من لوحة التحكم أولاً."
+    elif cmd == "/region":
+        await send_message(chat, "🔎 جاري فحص المنطقة — إنشاء حساب اختباري لمعرفة المنطقة المُقفلة…")
+        gc = bot_state.guild_config or {}
+        region = str(gc.get("region") or "ME").upper()
+        try:
+            probe = await asyncio.to_thread(account_generator.probe_region, region, None)
+        except Exception as e:
+            await send_message(chat, f"❌ فشل الفحص: {e}")
+            return
+        if not probe.get("ok"):
+            await send_message(chat, f"❌ فشل الفحص: {probe.get('error')}")
+            return
+        lock = str(probe.get("lock_region") or "؟").upper()
+        match = lock == region
+        reply = (
+            f"🌍 فحص المنطقة (المطلوب: {region})\n"
+            f"📍 بلد الـ IP: {probe.get('country_code') or '؟'}\n"
+            f"🔒 المنطقة المُقفلة على الحساب: {lock}\n\n"
+            + ("✅ متطابقة — الحسابات ستدخل الجيلد بلا مشاكل."
+               if match else
+               f"⚠️ غير متطابقة! الانضمام لجيلد {region} سيفشل (BR_CLAN_NOT_SAME_REGION).\n"
+               f"الحل: شغّل الأداة من شبكة داخل منطقة {region} أو استخدم بروكسي من نفس المنطقة من لوحة التحكم.")
+        )
     elif cmd == "/log":
         logs = bot_state.logs[-10:]
         reply = "\n".join(f"[{l.get('level', 'info')}] {l.get('message', '')}" for l in logs) or "السجل فارغ."
