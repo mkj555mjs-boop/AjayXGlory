@@ -1,0 +1,13 @@
+# بيانات التشغيل والسرية — لا ترفع إلى المستودع
+__pycache__/
+*.pyc
+accounts.json
+accounts_archive.json
+token_cache.json
+guild_config.json
+guild_exp_cache.json
+banned_accounts.json
+telegram_token.txt
+telegram_chats.json
+.env
+*.log
